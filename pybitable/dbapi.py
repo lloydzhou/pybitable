@@ -1,5 +1,6 @@
 import logging
 import pyparsing
+from collections import namedtuple
 from urllib.parse import urlparse
 from connectai.lark.sdk import Bot
 from mo_sql_parsing import parse as parse_sql, format
@@ -9,7 +10,7 @@ from pep249 import ConnectionPool, Connection as ConnectionBase, Cursor as Curso
 # pylint: disable=invalid-name
 apilevel = "2.0"
 threadsafety = 1
-paramstyle = "qmark"
+paramstyle = "pyformat"
 
 string_types = str
 logger = logging.getLogger(__name__)
@@ -19,23 +20,7 @@ class NotSupportedError(Exception): pass
 class Error(Exception): pass
 
 
-class ObjectDict(dict):
-
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name)
-
-    def __setattr__(self, name, value):
-        self[name] = value
-
-    def __delattr__(self, name):
-        del self[name]
-
-
 class Cursor(CursorBase):
-    description = ''
     def __init__(self, connection):
         self._connection = connection
         self.yield_per = 20
@@ -67,7 +52,7 @@ class Cursor(CursorBase):
         while True:
             url = f'{self._connection.bot.host}/open-apis/bitable/v1/apps/{self._connection.app_token}/tables/{table_id}/records/search?page_size={page_token}&page_token={page_token}'
             result = self._connection.bot.post(url, json=data).json()
-            # logger.error("result %r --> %r", data, result)
+            # logger.error("result %r %r --> %r", url, data, result)
             if 'error' in result:
                 raise Exception(result['error'].get('message', result.get('msg')))
             for item in result.get('data', {}).get('items', []):
@@ -89,18 +74,39 @@ class Cursor(CursorBase):
             else:
                 break
 
+    def convert_rows(cols, rows):
+
+        results = []
+        for row in rows:
+            values = []
+            for i, col in enumerate(row['c']):
+                if i < len(cols):
+                    converter = converters[cols[i]['type']]
+                    values.append(converter(col['v']) if col else None)
+            results.append(Row(*values))
+
+        return results
     def _process_result(self, item, names, alias):
+        Row = namedtuple('Row', alias, rename=True)
         values = []
         for name in names:
             if name in item:
                 values.append(item[name])
             elif name in item['fields']:
                 value = item['fields'][name]
+                # 多行文本是一个数组
+                if isinstance(value, list) and len(value) > 0 and 'text' in value[0]:
+                    value = ''.join([l['text'] for l in value])
                 values.append(value)
             else:
                 values.append(None)  # TODO
 
-        return ObjectDict(zip(alias, values))
+        return Row(*values)
+
+    @property
+    def description(self):
+        # TODO
+        return [(name, 'varchar', None, None, None, None, True) for name in self._columns[0]]
 
     def get_columns(self, parsed):
         if isinstance(parsed['select'], list):
@@ -115,7 +121,6 @@ class Cursor(CursorBase):
         return [], []
 
     def _process_filter(self, where):
-        print('_process_filter', where)
         if not('or' in where or 'and' in where):
             where = {'and': where if isinstance(where, list) else [where]}
 
@@ -160,7 +165,6 @@ class Cursor(CursorBase):
                 operator = 'like'
                 field_name, value = i['like']
             elif 'in' in i:
-                print('in', i)
                 operator = 'in'
                 field_name, value = i['in']
             elif 'missing' in i:
@@ -235,12 +239,18 @@ class Cursor(CursorBase):
 class Connection(ConnectionBase):
     # bitable+pybitable://<app_id>:<app_secret>@open.feishu.cn/<app_token>
     def __init__(self, connect_string, **kwargs):
-        result = urlparse(connect_string)
-        self.app_id = result.username
-        self.app_secret = result.password
-        self.host = result.hostname
-        # self.scheme = result.scheme
-        self.app_token = result.path[1:]
+        if connect_string:
+            result = urlparse(connect_string)
+            self.app_id = result.username
+            self.app_secret = result.password
+            self.host = result.hostname
+            # self.scheme = result.scheme
+            self.app_token = result.path[1:]
+        elif 'host' in kwargs:
+            self.app_id = kwargs.get('username', '')
+            self.app_secret = kwargs.get('password', '')
+            self.host = kwargs.get('host', '')
+            self.app_token = kwargs.get('database', '')
         self.bot = Bot(
             app_id=self.app_id,
             app_secret=self.app_secret,
