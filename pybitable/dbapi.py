@@ -44,13 +44,13 @@ class Cursor(CursorBase):
         pass
 
     def execute(self, query, parameters=()):
-        logging.error("execute %r", query)
+        logger.debug("execute %r", query)
         try:
             parsed_query = parse_sql(query)
         except pyparsing.ParseException as e:
             raise Exception(query)
 
-        logging.error("execute %r", parsed_query)
+        logger.debug("execute %r", parsed_query)
         # {'select': {'all_columns': {}}, 'from': 'tbl2w2QJgo6YCthm', 'limit': 1, 'offset': 10}
         if 'select' in parsed_query and 'from' in parsed_query:
             return self.do_select(parsed_query)
@@ -64,10 +64,12 @@ class Cursor(CursorBase):
 
     def _query_all(self, table_id, data):
         page_token, page_size = '', self.yield_per
-        print('_query_all', table_id, data)
         while True:
             url = f'{self._connection.bot.host}/open-apis/bitable/v1/apps/{self._connection.app_token}/tables/{table_id}/records/search?page_size={page_token}&page_token={page_token}'
             result = self._connection.bot.post(url, json=data).json()
+            # logger.error("result %r --> %r", data, result)
+            if 'error' in result:
+                raise Exception(result['error'].get('message', result.get('msg')))
             for item in result.get('data', {}).get('items', []):
                 if self._offset > 0:
                     self._offset = self._offset - 1
@@ -112,6 +114,73 @@ class Cursor(CursorBase):
                 return [], []
         return [], []
 
+    def _process_filter(self, where):
+        print('_process_filter', where)
+        if not('or' in where or 'and' in where):
+            where = {'and': where if isinstance(where, list) else [where]}
+
+        conjunction = 'or' if 'or' in where else 'and'
+        conditions = []
+        for i in where.get(conjunction, []):
+            """
+            operator 可选值有：
+            is：等于
+            isNot：不等于
+            contains：包含
+            doesNotContain：不包含
+            isEmpty：为空
+            isNotEmpty：不为空
+            isGreater：大于
+            isGreaterEqual：大于等于
+            isLess：小于
+            isLessEqual：小于等于
+            like：like
+            in：in
+            """
+            field_name, operator, value = '', '', ''
+            if 'eq' in i:
+                operator = 'is'
+                field_name, value = i['eq']
+            elif 'neq' in i:
+                operator = 'isNot'
+                field_name, value = i['neq']
+            elif 'lt' in i:
+                operator = 'isLess'
+                field_name, value = i['lt']
+            elif 'lte' in i:
+                operator = 'isLessEqual'
+                field_name, value = i['lte']
+            elif 'gt' in i:
+                operator = 'isGreater'
+                field_name, value = i['gt']
+            elif 'gte' in i:
+                operator = 'isGreaterEqual'
+                field_name, value = i['gte']
+            elif 'like' in i:
+                operator = 'like'
+                field_name, value = i['like']
+            elif 'in' in i:
+                print('in', i)
+                operator = 'in'
+                field_name, value = i['in']
+            elif 'missing' in i:
+                operator = 'isEmpty'
+                field_name, value = i['missing'], ''
+            elif 'exists' in i:
+                operator = 'isNotEmpty'
+                field_name, value = i['exists'], ''
+            # TODO filter.children
+
+            if operator:
+                if field_name in self._columns[1]:
+                    field_name = self._columns[0][self._columns[1].index(field_name)]
+                conditions.append({
+                    'field_name': field_name,
+                    'operator': operator,
+                    'value': value if isinstance(value, list) else [value],
+                })
+        return conjunction, conditions
+
     def do_select(self, parsed):
         table_id = parsed['from']
         self._offset = parsed.get('offset', 0)
@@ -131,12 +200,13 @@ class Cursor(CursorBase):
                 'desc': i.get('sort', '').lower() == 'desc'
             })
 
+        conjunction, conditions = self._process_filter(parsed.get('where', {}))
         self._result_set = self._query_all(table_id, {
             'field_names': [i for i in self._columns[0] if i not in ['record_id']],  # record_id
             'sort': sort,
             'filter': {
-                'conjunction': 'and',  # or
-                'conditions': [],  # {field_name, operator, value}
+                'conjunction': conjunction,
+                'conditions': conditions,
             },
             'automatic_fields': True,
         })
