@@ -24,14 +24,11 @@ with conn_pool.connect() as connection:
 ## using sqlalchemy
 
 ```
-
 from sqlalchemy import create_engine, Column, String, Text, text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
 
 engine = create_engine(db_url, echo=False)
-Session = sessionmaker(bind=engine)
-session = Session()
+Session = sessionmaker(engine)
 
 with engine.connect() as conn:
     result = conn.execute(
@@ -49,11 +46,9 @@ class BITable1(Base):
     单选 = Column(String(32), nullable=True, server_default=text("''"), comment="单选")
     多选 = Column(Text, nullable=True, server_default=text("''"), comment="多选")
 
-Session = sessionmaker(bind=engine)
-session = Session()
-
-for item in session.query(BITable1).all():
-    print('record_id: ', item.record_id, '文本: ', item.文本, '单选', item.单选, '多选', item.多选)
+with Session.begin() as session:
+    for item in session.query(BITable1).all():
+        print('record_id: ', item.record_id, '文本: ', item.文本, '单选', item.单选, '多选', item.多选)
 
 print('engine', engine, BITable1)
 ```

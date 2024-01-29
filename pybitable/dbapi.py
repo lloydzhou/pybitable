@@ -35,7 +35,7 @@ class PersonalBaseClient(object):
     def post(self, url, **kwargs):
         return self.request("POST", url, **kwargs)
 
-    def get_table_record(self, table_id, data, page_token='', page_size=20):
+    def get_table_record(self, table_id, data, page_token='', page_size=500):
         url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records?page_size={page_size}&page_token={page_token}'
         return self.get(url, data=data).json()
 
@@ -46,7 +46,7 @@ class BotClient(Bot):
         super().__init__(*args, **kwargs)
         self.app_token = app_token
 
-    def get_table_record(self, table_id, data, page_token='', page_size=20):
+    def get_table_record(self, table_id, data, page_token='', page_size=500):
         url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records/search?page_size={page_token}&page_token={page_token}'
         return self.post(url, json=data).json()
 
@@ -58,7 +58,7 @@ class Error(Exception): pass
 class Cursor(CursorBase):
     def __init__(self, connection):
         self._connection = connection
-        self.yield_per = 20
+        self.yield_per = 500
 
     def close(self):
         pass
