@@ -20,6 +20,20 @@ logger = logging.getLogger(__name__)
 class NotSupportedError(Exception): pass
 
 
+class ObjectDict(dict):
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+    def __delattr__(self, name):
+        del self[name]
+
 
 class Cursor(CursorBase):
     def __init__(self, connection):
@@ -50,6 +64,7 @@ class Cursor(CursorBase):
 
     def _query_all(self, table_id, data):
         page_token, page_size = '', self.yield_per
+        print('_query_all', table_id, data)
         while True:
             url = f'{self._connection.bot.host}/open-apis/bitable/v1/apps/{self._connection.app_token}/tables/{table_id}/records/search?page_size={page_token}&page_token={page_token}'
             result = self._connection.bot.post(url, json=data).json()
@@ -59,7 +74,10 @@ class Cursor(CursorBase):
                     continue
                 elif self._limit > 0:
                     # yield item
-                    yield item['fields']
+                    # yield item['fields']
+                    # 按照self._columns的结构返回数据
+                    names, alias = self._columns
+                    yield self._process_result(item, names, alias)
                     self._limit = self._limit - 1
                 else:
                     break
@@ -69,14 +87,53 @@ class Cursor(CursorBase):
             else:
                 break
 
+    def _process_result(self, item, names, alias):
+        values = []
+        for name in names:
+            if name in item:
+                values.append(item[name])
+            elif name in item['fields']:
+                value = item['fields'][name]
+                values.append(value)
+            else:
+                values.append(None)  # TODO
+
+        return ObjectDict(zip(alias, values))
+
+    def get_columns(self, parsed):
+        if isinstance(parsed['select'], list):
+            return [i['value'] for i in parsed['select']], [i.get('name', i['value']) for i in parsed['select']]
+        elif isinstance(parsed['select'], dict):
+            if 'value' in parsed['select']:
+                value = parsed['select']['value']
+                return [value], [parsed['select'].get('name', value)]
+            elif 'all_columns' in parsed['select']:
+                # TODO 这里通过接口获取所有字段
+                return [], []
+        return [], []
+
     def do_select(self, parsed):
         table_id = parsed['from']
         self._offset = parsed.get('offset', 0)
         self._limit = parsed.get('limit', 20000)  # TODO
+        self._columns = self.get_columns(parsed)
+
+        orderby = parsed.get('orderby', [])
+        if isinstance(orderby, dict):
+            orderby = [orderby]
+        sort = []
+        for i in orderby:
+            field_name = i['value']
+            if field_name in self._columns[1]:
+                field_name = self._columns[0][self._columns[1].index(field_name)]
+            sort.append({
+                'field_name': field_name,
+                'desc': i.get('sort', '').lower() == 'desc'
+            })
 
         self._result_set = self._query_all(table_id, {
-            'field_names': None,
-            'sort': [],
+            'field_names': [i for i in self._columns[0] if i not in ['record_id']],  # record_id
+            'sort': sort,
             'filter': {
                 'conjunction': 'and',  # or
                 'conditions': [],  # {field_name, operator, value}
