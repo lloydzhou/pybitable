@@ -17,7 +17,15 @@ string_types = str
 logger = logging.getLogger(__name__)
 
 
-class PersonalBaseClient(object):
+class ClientMixin:
+
+    def get_columns(self, table_id):
+        # TODO 这里最大支持100
+        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/fields?page_size=100'
+        return self.get(url).json()
+
+
+class PersonalBaseClient(ClientMixin):
     def __init__(self, personal_base_token='', app_token='', host='https://base-api.feishu.cn'):
         self.personal_base_token = personal_base_token
         self.app_token = app_token
@@ -40,7 +48,7 @@ class PersonalBaseClient(object):
         return self.get(url, data=data).json()
 
 
-class BotClient(Bot):
+class BotClient(Bot, ClientMixin):
 
     def __init__(self, *args, app_token='', **kwargs):
         super().__init__(*args, **kwargs)
@@ -150,8 +158,9 @@ class Cursor(CursorBase):
                 value = parsed['select']['value']
                 return [value], [parsed['select'].get('name', value)]
             elif 'all_columns' in parsed['select']:
-                # TODO 这里通过接口获取所有字段
-                return [], []
+                result = self._connection.bot.get_columns(parsed['from'])
+                items = result.get('data', {}).get('items', [])
+                return [i['field_name'] for i in items], [i['field_name'] for i in items]
         return [], []
 
     def _process_filter(self, where):
