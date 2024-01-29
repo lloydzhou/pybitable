@@ -1,5 +1,6 @@
 import logging
 import pyparsing
+import httpx
 from collections import namedtuple
 from urllib.parse import urlparse
 from connectai.lark.sdk import Bot
@@ -14,6 +15,40 @@ paramstyle = "pyformat"
 
 string_types = str
 logger = logging.getLogger(__name__)
+
+
+class PersonalBaseClient(object):
+    def __init__(self, personal_base_token='', app_token='', host='https://base-api.feishu.cn'):
+        self.personal_base_token = personal_base_token
+        self.app_token = app_token
+        self.host = host
+
+    def request(self, method, url, headers=None, **kwargs):
+        headers = headers or dict()
+        if "Authorization" not in headers:
+            headers["Authorization"] = "Bearer {}".format(self.personal_base_token)
+        return httpx.request(method, url, headers=headers, **kwargs)
+
+    def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self.request("POST", url, **kwargs)
+
+    def get_table_record(self, table_id, data, page_token='', page_size=20):
+        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records?page_size={page_size}&page_token={page_token}'
+        return self.get(url, data=data).json()
+
+
+class BotClient(Bot):
+
+    def __init__(self, *args, app_token='', **kwargs):
+        super().__init__(*args, **kwargs)
+        self.app_token = app_token
+
+    def get_table_record(self, table_id, data, page_token='', page_size=20):
+        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records/search?page_size={page_token}&page_token={page_token}'
+        return self.post(url, json=data).json()
 
 
 class NotSupportedError(Exception): pass
@@ -50,8 +85,7 @@ class Cursor(CursorBase):
     def _query_all(self, table_id, data):
         page_token, page_size = '', self.yield_per
         while True:
-            url = f'{self._connection.bot.host}/open-apis/bitable/v1/apps/{self._connection.app_token}/tables/{table_id}/records/search?page_size={page_token}&page_token={page_token}'
-            result = self._connection.bot.post(url, json=data).json()
+            result = self._connection.bot.get_table_record(table_id, data, page_token=page_token, page_size=page_size)
             # logger.error("result %r %r --> %r", url, data, result)
             if 'error' in result:
                 raise Exception(result['error'].get('message', result.get('msg')))
@@ -238,6 +272,7 @@ class Cursor(CursorBase):
 
 class Connection(ConnectionBase):
     # bitable+pybitable://<app_id>:<app_secret>@open.feishu.cn/<app_token>
+    # bitable+pybitable://<personal_base_token>@open.feishu.cn/<app_token>
     def __init__(self, connect_string, **kwargs):
         if connect_string:
             result = urlparse(connect_string)
@@ -251,11 +286,20 @@ class Connection(ConnectionBase):
             self.app_secret = kwargs.get('password', '')
             self.host = kwargs.get('host', '')
             self.app_token = kwargs.get('database', '')
-        self.bot = Bot(
-            app_id=self.app_id,
-            app_secret=self.app_secret,
-            host=f"https://{self.host}",
-        )
+        if self.app_id and self.app_secret:
+            self.bot = BotClient(
+                app_id=self.app_id,
+                app_secret=self.app_secret,
+                app_token=self.app_token,
+                host=f"https://{self.host}",
+            )
+        else:
+            # 使用个人授权码可以直接调用
+            self.bot = PersonalBaseClient(
+                personal_base_token=self.app_id or self.app_secret,
+                app_token=self.app_token,
+                host=f"https://{self.host}",
+            )
 
     def commit(self):
         pass

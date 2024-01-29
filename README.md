@@ -5,6 +5,10 @@ from pybitable import Connection, ConnectionPool
 
 db_url = 'bitable+pybitable://<app_id>:<app_secret>@open.feishu.cn/<app_token>'
 
+# 支持使用personal_base_token访问多维表格，这里建议使用后面一种写法，sqlalchemy打印日志的时候，会将personal_base_token当成密码显示星号
+db_url = 'bitable+pybitable://<personal_base_token>@open.feishu.cn/<app_token>'
+db_url = 'bitable+pybitable://:<personal_base_token>@open.feishu.cn/<app_token>'
+
 conn_pool = ConnectionPool(
     maxsize=10,
     connection_factory=lambda: Connection(db_url),
