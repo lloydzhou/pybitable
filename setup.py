@@ -1,4 +1,4 @@
-"""Setup script for PyDuckDB."""
+"""Setup script for Lark BITable."""
 import setuptools
 from pybitable import __version__
 
@@ -26,6 +26,9 @@ setuptools.setup(
         'sqlalchemy': ['sqlalchemy'],
     },
     install_requires=[
-        "pep249>=1.1.0"
+        "pep249",
+        "pyparsing",
+        "mo_sql_parsing",
+        "ca-lark-sdk"
     ]
 )

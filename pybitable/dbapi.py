@@ -1,7 +1,5 @@
 import logging
 import pyparsing
-from collections import OrderedDict
-from mo_sql_parsing import parse as parse_sql
 from urllib.parse import urlparse
 from connectai.lark.sdk import Bot
 from mo_sql_parsing import parse as parse_sql, format
@@ -18,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class NotSupportedError(Exception): pass
+class Error(Exception): pass
 
 
 class ObjectDict(dict):
@@ -36,6 +35,7 @@ class ObjectDict(dict):
 
 
 class Cursor(CursorBase):
+    description = ''
     def __init__(self, connection):
         self._connection = connection
         self.yield_per = 20
@@ -55,7 +55,7 @@ class Cursor(CursorBase):
         if 'select' in parsed_query and 'from' in parsed_query:
             return self.do_select(parsed_query)
 
-        return None
+        return self
 
     def executemany(self, operation, seq_of_parameters):
         for parameters in seq_of_parameters:
@@ -256,4 +256,8 @@ class Connection(ConnectionBase):
     def cursor(self):
         return Cursor(self)
 
+
+def connect(connection_string: str = "", **kwargs) -> Connection:
+    """Connect to a Lark BITable, returning a connection."""
+    return Connection(connection_string, **kwargs)
 

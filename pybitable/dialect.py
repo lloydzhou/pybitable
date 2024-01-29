@@ -67,6 +67,7 @@ class BITableDialect(default.DefaultDialect):
     returns_unicode_strings = True
     description_encoding = None
     supports_native_boolean = True
+    supports_statement_cache = True
 
     def __init__(self, **kw):
         default.DefaultDialect.__init__(self, **kw)
