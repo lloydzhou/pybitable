@@ -21,12 +21,16 @@ setuptools.setup(
     packages=setuptools.find_packages(),
     python_requires=">=3.10",
     entry_points={
+        'console_scripts': [
+            'pybitable = pybitable.console:main',
+        ],
         'sqlalchemy.dialects': [
             'bitable = pybitable.dialect:BITableDialect',
             'bitable.pybitable = pybitable.dialect:BITableDialect',
         ],
     },
     extras_require={
+        'cli': ['docopt', 'pygments', 'prompt_toolkit>=2', 'tabulate'],
         'sqlalchemy': ['sqlalchemy'],
     },
     install_requires=[

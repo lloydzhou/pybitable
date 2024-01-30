@@ -20,10 +20,16 @@ MAX_LIMIT = 20000
 
 class ClientMixin:
 
+    def get_tables(self):
+        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables?page_size=100'
+        result = self.get(url).json()
+        return result.get('data', {}).get('items', [])
+
     def get_columns(self, table_id):
         # TODO 这里最大支持100
         url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/fields?page_size=100'
-        return self.get(url).json()
+        result = self.get(url).json()
+        return result.get('data', {}).get('items', [])
 
     def create_record(self, table_id, fields):
         url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records'
@@ -89,6 +95,8 @@ class Cursor(CursorBase):
         return value if isinstance(v, (str, int, bool)) else f"'{value}'"
 
     def execute(self, query, parameters=None):
+        if 'show tables' in query.lower():
+            return self.do_show_tables()
         try:
             # always format json.dumps string to sql
             if isinstance(parameters, (tuple, list)):
@@ -175,8 +183,7 @@ class Cursor(CursorBase):
                 value = parsed['select']['value']
                 return [value], [parsed['select'].get('name', value)]
             elif 'all_columns' in parsed['select']:
-                result = self._connection.bot.get_columns(parsed['from'])
-                items = result.get('data', {}).get('items', [])
+                items = self._connection.bot.get_columns(parsed['from'])
                 return [i['field_name'] for i in items], [i['field_name'] for i in items]
         return [], []
 
@@ -263,6 +270,16 @@ class Cursor(CursorBase):
                     filters.append(f'{comma}NOT(CurrentValue.[{field_name}]="")')
             filters.append(')')
         return ''.join(filters)
+
+    def do_show_tables(self):
+        tables = self._connection.bot.get_tables()
+        title =f'Tables_in_{self._connection.bot.app_token}'
+        Row = namedtuple('Row', [title], rename=True)
+        self._result_set = iter([Row(t['table_id']) for t in tables])
+        self._columns = [title], [title]
+        self._offset = 0
+        self._limit = len(tables)
+        return self
 
     def do_select(self, parsed):
         table_id = parsed['from']
