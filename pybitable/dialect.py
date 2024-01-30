@@ -11,20 +11,6 @@ class BITableCompiler(compiler.SQLCompiler):
             column.table.named_with_column = False
         return super(BITableCompiler, self).visit_column(column, **kwargs)
 
-    def visit_table(
-        self,
-        table,
-        asfrom=False,
-        iscrud=False,
-        ashint=False,
-        fromhints=None,
-        use_schema=False,
-        **kwargs
-    ):
-        return super(BITableCompiler, self).visit_table(
-            table, asfrom, iscrud, ashint, fromhints, False, **kwargs
-        )
-
     def _inserted_primary_key_from_lastrowid_getter(self, lastrowid, *args, **kwargs):
         return [lastrowid]
 
