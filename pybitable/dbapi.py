@@ -187,8 +187,10 @@ class Cursor(CursorBase):
                 return [i['field_name'] for i in items], [i['field_name'] for i in items]
         return [], []
 
-    def _process_filter1(self, where):
-        if not('or' in where or 'and' in where):
+    def _process_filter(self, where):
+        if 'not' in where:
+            return ''.join(['NOT(', self._process_filter(where['not']), ')'])
+        if not('or' in where or 'and' in where or 'not' in where):
             where = {'and': where if isinstance(where, list) else [where]}
 
         conjunction = 'or' if 'or' in where else 'and'
@@ -268,6 +270,12 @@ class Cursor(CursorBase):
                 elif 'exists' in i:
                     field_name = i['exists']
                     filters.append(f'{comma}NOT(CurrentValue.[{field_name}]="")')
+                elif 'not' in i:
+                    filters.append(f'{comma}NOT({self._process_filter(i["not"])})')
+                elif 'and' in i:
+                    filters.append(f'{comma}AND({self._process_filter(i["and"])})')
+                elif 'or' in i:
+                    filters.append(f'{comma}OR({self._process_filter(i["or"])})')
             filters.append(')')
         return ''.join(filters)
 
@@ -297,7 +305,7 @@ class Cursor(CursorBase):
                 field_name = self._columns[0][self._columns[1].index(field_name)]
             sort.append(f"{field_name} {i.get('sort', '')}")
 
-        filter_str = self._process_filter1(parsed.get('where', {}))
+        filter_str = self._process_filter(parsed.get('where', {}))
         self._result_set = self._query_all(table_id, {
             'field_names': json.dumps([i for i in self._columns[0] if i not in ['record_id']], ensure_ascii=False),  # record_id
             'sort': json.dumps(sort, ensure_ascii=False),
