@@ -25,10 +25,19 @@ class ClientMixin:
         return self.get(url).json()
 
     def create_record(self, table_id, fields):
-        return 111111
+        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records'
+        result = self.post(url, json={'fields': fields}).json()
+        record_id = result.get('data', {}).get('record', {}).get('record_id')
+        if not record_id:
+            raise Exception(result.get('msg', ''))
+        return record_id
 
     def update_records(self, table_id, records):
         url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records/batch_update'
+        return self.post(url, json={'records': records}).json()
+
+    def delete_records(self, table_id, records):
+        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records/batch_delete'
         return self.post(url, json={'records': records}).json()
 
     def get_table_record(self, table_id, data, page_token='', page_size=500):
@@ -75,13 +84,12 @@ class Cursor(CursorBase):
         pass
 
     def execute(self, query, parameters=None):
-        logger.debug("execute %r %r", query, parameters)
         try:
             # always format json.dumps string to sql
             if isinstance(parameters, (tuple, list)):
-                parameters = [f"{json.dumps(v)}" for v in parameters]
+                parameters = [f"{json.dumps(v)}" if isinstance(v, (str, int, bool)) else f"'{json.dumps(v)}'" for v in parameters]
             elif isinstance(parameters, dict):
-                parameters = {k: f"{json.dumps(v)}" for k, v in parameters.items()}
+                parameters = {k: f"{json.dumps(v)}" if isinstance(v, (str, int, bool)) else f"'{json.dumps(v)}'" for k, v in parameters.items()}
             else:
                 parameters = ()
             parsed_query = parse_sql(query % parameters)
@@ -91,10 +99,12 @@ class Cursor(CursorBase):
         logger.debug("execute %r", parsed_query)
         if 'select' in parsed_query and 'from' in parsed_query:
             return self.do_select(parsed_query)
-        # elif 'insert' in parsed_query:
-        #     return self.do_insert(parsed_query)
+        elif 'insert' in parsed_query:
+            return self.do_insert(parsed_query)
         elif 'update' in parsed_query:
             return self.do_update(parsed_query)
+        elif 'delete' in parsed_query:
+            return self.do_delete(parsed_query)
 
         return self
 
@@ -223,7 +233,10 @@ class Cursor(CursorBase):
                 elif 'like' in i:
                     field_name, value = i['like']
                     # 这里一定是字符串
-                    filters.append(f'{comma}CurrentValue.[{field_name}].contains({value["literal"]})')
+                    if '"' == value["literal"][0]:
+                        filters.append(f'{comma}CurrentValue.[{field_name}].contains({value["literal"]})')
+                    else:
+                        filters.append(f'{comma}CurrentValue.[{field_name}].contains("{value["literal"]}")')
                 elif 'in' in i:
                     field_name, value = i['in']
                     is_literal = isinstance(value, dict) and 'literal' in value
@@ -242,7 +255,7 @@ class Cursor(CursorBase):
                     filters.append(f'{comma}CurrentValue.[{field_name}]=""')
                 elif 'exists' in i:
                     field_name = i['exists']
-                    filters.append(f'{comma}NOT(CurrentValue.[{field_name}]=""')
+                    filters.append(f'{comma}NOT(CurrentValue.[{field_name}]="")')
             filters.append(')')
         return ''.join(filters)
 
@@ -272,16 +285,17 @@ class Cursor(CursorBase):
         return self
 
     def do_insert(self, parsed):
-        # TODO insert empty record, and then update
-        self._columns = ['文本'], ['文本']
-        # execute {'columns': ['文本', '多选'], 'query': {'select': [{'value': {'literal': '文本111'}}, {'value': {'create_array': [{'literal': 'A'}, {'literal': 'B'}]}}]}, 'insert': 'tblID0QbOnjktwdC'}
-        # fields = {}
-        # for index, column in enumerate(parsed['columns']):
-        #     value = parsed['select'][index]['value']
-        #     if 'literal' in value:
-        #         fields[column] = value['literal']
-        #     elif 'create_array' in value:
-        #         pass
+        fields = {}
+        for index, column in enumerate(parsed['columns']):
+            value = parsed['query']['select'][index]['value']
+            if isinstance(value, dict) and 'literal' in value:
+                try:
+                    fields[column] = json.loads(value['literal'])
+                except Exception as e:
+                    logger.debug(e)
+                    fields[column] = value['literal']
+            else:
+                fields[column] = value
 
         self.lastrowid = self._connection.bot.create_record(parsed['insert'], fields)
         return self.lastrowid
@@ -294,7 +308,7 @@ class Cursor(CursorBase):
 
     def _get_record_id_by_where(self, where, table_id):
         if 'eq' in where and 'record_id' == where['eq'][0]:
-            return [self._get_literal_value(where['eq'][1]['literal'])]
+            return [self._get_literal_value(where['eq'][1])]
 
         sql = format({ 'from': table_id, 'where': where, 'select': [{ 'value': 'record_id' }], 'limit': 1 })
         cursor = Cursor(self._connection)
@@ -311,6 +325,14 @@ class Cursor(CursorBase):
         self.rowcount = len(record_ids)
         if self.rowcount > 0:
             self._connection.bot.update_records(table_id, records)
+
+    def do_delete(self, parsed):
+        table_id = parsed['delete']
+        record_ids = self._get_record_id_by_where(parsed.get('where', {}), table_id)
+        logger.debug('delete %r %r', table_id, record_ids)
+        self.rowcount = len(record_ids)
+        if self.rowcount > 0:
+            self._connection.bot.delete_records(table_id, record_ids)
 
     def fetchone(self):
         try:

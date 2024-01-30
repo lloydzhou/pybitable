@@ -2,23 +2,6 @@ from sqlalchemy import exc, pool, types, inspect
 from sqlalchemy.engine import default
 from sqlalchemy.sql import compiler
 
-_type_map = {
-    'bit': types.BOOLEAN,
-    'bigint': types.BIGINT,
-    'binary': types.LargeBinary,
-    'boolean': types.BOOLEAN,
-    'date': types.DATE,
-    'decimal': types.DECIMAL,
-    'double': types.FLOAT,
-    'int': types.INTEGER,
-    'integer': types.INTEGER,
-    'interval': types.Interval,
-    'smallint': types.SMALLINT,
-    'timestamp': types.TIMESTAMP,
-    'time': types.TIME,
-    'varchar': types.String,
-    'any': types.String,
-}
 
 
 class BITableCompiler(compiler.SQLCompiler):
@@ -41,6 +24,9 @@ class BITableCompiler(compiler.SQLCompiler):
         return super(BITableCompiler, self).visit_table(
             table, asfrom, iscrud, ashint, fromhints, False, **kwargs
         )
+
+    def _inserted_primary_key_from_lastrowid_getter(self, lastrowid, *args, **kwargs):
+        return [lastrowid]
 
 
 class BITableTypeCompiler(compiler.GenericTypeCompiler): pass
@@ -68,7 +54,7 @@ class BITableDialect(default.DefaultDialect):
     description_encoding = None
     supports_native_boolean = True
     supports_statement_cache = True
-    postfetch_lastrowid = True
+    postfetch_lastrowid = True  # 设置这个参数，配合前面的getter，确保插入之后的记录会有record_id
 
     def __init__(self, **kw):
         default.DefaultDialect.__init__(self, **kw)
@@ -94,5 +80,5 @@ class BITableDialect(default.DefaultDialect):
 
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         """BITable has no support for primary keys.  Retunrs an empty list."""
-        return []
+        return {"constrained_columns": []}
 
