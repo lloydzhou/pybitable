@@ -15,6 +15,7 @@ threadsafety = 1
 paramstyle = "pyformat"
 
 logger = logging.getLogger(__name__)
+MAX_LIMIT = 20000
 
 
 class ClientMixin:
@@ -83,13 +84,17 @@ class Cursor(CursorBase):
     def close(self):
         pass
 
+    def _escape(self, v):
+        value = f"{json.dumps(v, ensure_ascii=False)}"
+        return value if isinstance(v, (str, int, bool)) else f"'{value}'"
+
     def execute(self, query, parameters=None):
         try:
             # always format json.dumps string to sql
             if isinstance(parameters, (tuple, list)):
-                parameters = [f"{json.dumps(v)}" if isinstance(v, (str, int, bool)) else f"'{json.dumps(v)}'" for v in parameters]
+                parameters = [self._escape(v) for v in parameters]
             elif isinstance(parameters, dict):
-                parameters = {k: f"{json.dumps(v)}" if isinstance(v, (str, int, bool)) else f"'{json.dumps(v)}'" for k, v in parameters.items()}
+                parameters = {k: self._escape(v) for k, v in parameters.items()}
             else:
                 parameters = ()
             parsed_query = parse_sql(query % parameters)
@@ -210,13 +215,13 @@ class Cursor(CursorBase):
                         else:
                             filters.append(f'{comma}CurrentValue.[{field_name}]="{value["literal"]}"')
                     else:
-                        filters.append(f'{comma}CurrentValue.[{field_name}]={json.dumps(value)}')
+                        filters.append(f'{comma}CurrentValue.[{field_name}]={json.dumps(value, ensure_ascii=False)}')
                 elif 'neq' in i:
                     field_name, value = i['neq']
                     if isinstance(value, dict) and 'literal' in value:
                         filters.append(f'{comma}NOT(CurrentValue.[{field_name}]="{value["literal"]}")')
                     else:
-                        filters.append(f'{comma}NOT(CurrentValue.[{field_name}]={json.dumps(value["literal"])})')
+                        filters.append(f'{comma}NOT(CurrentValue.[{field_name}]={json.dumps(value["literal"], ensure_ascii=False)})')
                 elif 'lt' in i:
                     field_name, value = i['lt']
                     # 只支持可以比较大小的
@@ -262,7 +267,7 @@ class Cursor(CursorBase):
     def do_select(self, parsed):
         table_id = parsed['from']
         self._offset = int(parsed['offset'].get('literal', 0) if isinstance(parsed.get('offset'), dict) else parsed.get('offset', 0))
-        self._limit = int(parsed['limit'].get('literal', 20000) if isinstance(parsed.get('limit'), dict) else parsed.get('limit', 0))
+        self._limit = int(parsed['limit'].get('literal', MAX_LIMIT) if isinstance(parsed.get('limit'), dict) else parsed.get('limit', MAX_LIMIT))
         self._columns = self.get_columns(parsed)
 
         orderby = parsed.get('orderby', [])
@@ -277,8 +282,8 @@ class Cursor(CursorBase):
 
         filter_str = self._process_filter1(parsed.get('where', {}))
         self._result_set = self._query_all(table_id, {
-            'field_names': json.dumps([i for i in self._columns[0] if i not in ['record_id']]),  # record_id
-            'sort': json.dumps(sort),
+            'field_names': json.dumps([i for i in self._columns[0] if i not in ['record_id']], ensure_ascii=False),  # record_id
+            'sort': json.dumps(sort, ensure_ascii=False),
             'filter': filter_str,
             'automatic_fields': True,
         })
@@ -310,7 +315,7 @@ class Cursor(CursorBase):
         if 'eq' in where and 'record_id' == where['eq'][0]:
             return [self._get_literal_value(where['eq'][1])]
 
-        sql = format({ 'from': table_id, 'where': where, 'select': [{ 'value': 'record_id' }], 'limit': 1 })
+        sql = format({ 'from': table_id, 'where': where, 'select': [{ 'value': 'record_id' }] })
         cursor = Cursor(self._connection)
         cursor.execute(sql)
         records = cursor.fetchall()
