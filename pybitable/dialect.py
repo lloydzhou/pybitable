@@ -68,6 +68,7 @@ class BITableDialect(default.DefaultDialect):
     description_encoding = None
     supports_native_boolean = True
     supports_statement_cache = True
+    postfetch_lastrowid = True
 
     def __init__(self, **kw):
         default.DefaultDialect.__init__(self, **kw)
@@ -94,50 +95,4 @@ class BITableDialect(default.DefaultDialect):
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         """BITable has no support for primary keys.  Retunrs an empty list."""
         return []
-
-    def get_schema_names(self, connection, **kw):
-        return tuple(["default"])
-
-    def get_view_names(self, connection, schema=None, **kw):
-        return []
-
-    def get_columns(self, connection, table_name, schema=None, **kwargs):
-        query = 'SELECT * FROM "{table}" LIMIT 0'.format(table=table_name)
-        result = connection.execute(query)
-        return [
-            {
-                "name": col[0],
-                "type": type_map[col[1].value],
-                "nullable": True,
-                "default": None,
-            }
-            for col in result._cursor_description()
-        ]
-
-    def has_table(self, connection, table_name, schema=None):
-        try:
-            self.get_columns(connection, table_name, schema)
-            return True
-        except exc.NoSuchTableError:
-            logging.exception("Error in BITable.has_table")
-            return False
-
-    def _check_unicode_returns(self, connection, additional_tests=None):
-        # requests gives back Unicode strings
-        return True
-
-    def _check_unicode_description(self, connection):
-        # requests gives back Unicode strings
-        return True
-
-    def object_as_dict(self):
-        return {c.key: getattr(self, c.key) for c in inspect(self).mapper.column_attrs}
-
-    def get_data_type(self, data_type):
-        try:
-            dt = _type_map[data_type]
-        except Exception:
-            dt = types.UserDefinedType
-        return dt
-
 

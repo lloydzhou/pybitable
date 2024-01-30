@@ -1,4 +1,5 @@
 import logging
+import json
 import pyparsing
 import httpx
 from collections import namedtuple
@@ -13,7 +14,6 @@ apilevel = "2.0"
 threadsafety = 1
 paramstyle = "pyformat"
 
-string_types = str
 logger = logging.getLogger(__name__)
 
 
@@ -23,6 +23,17 @@ class ClientMixin:
         # TODO 这里最大支持100
         url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/fields?page_size=100'
         return self.get(url).json()
+
+    def create_record(self, table_id, fields):
+        return 111111
+
+    def update_records(self, table_id, records):
+        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records/batch_update'
+        return self.post(url, json={'records': records}).json()
+
+    def get_table_record(self, table_id, data, page_token='', page_size=500):
+        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records'
+        return self.get(url, params=dict(page_size=page_size, page_token=page_token, **data)).json()
 
 
 class PersonalBaseClient(ClientMixin):
@@ -43,20 +54,12 @@ class PersonalBaseClient(ClientMixin):
     def post(self, url, **kwargs):
         return self.request("POST", url, **kwargs)
 
-    def get_table_record(self, table_id, data, page_token='', page_size=500):
-        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records?page_size={page_size}&page_token={page_token}'
-        return self.get(url, data=data).json()
-
 
 class BotClient(Bot, ClientMixin):
 
     def __init__(self, *args, app_token='', **kwargs):
         super().__init__(*args, **kwargs)
         self.app_token = app_token
-
-    def get_table_record(self, table_id, data, page_token='', page_size=500):
-        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records/search?page_size={page_token}&page_token={page_token}'
-        return self.post(url, json=data).json()
 
 
 class NotSupportedError(Exception): pass
@@ -71,17 +74,27 @@ class Cursor(CursorBase):
     def close(self):
         pass
 
-    def execute(self, query, parameters=()):
-        logger.debug("execute %r", query)
+    def execute(self, query, parameters=None):
+        logger.debug("execute %r %r", query, parameters)
         try:
-            parsed_query = parse_sql(query)
+            # always format json.dumps string to sql
+            if isinstance(parameters, (tuple, list)):
+                parameters = [f"{json.dumps(v)}" for v in parameters]
+            elif isinstance(parameters, dict):
+                parameters = {k: f"{json.dumps(v)}" for k, v in parameters.items()}
+            else:
+                parameters = ()
+            parsed_query = parse_sql(query % parameters)
         except pyparsing.ParseException as e:
             raise Exception(query)
 
         logger.debug("execute %r", parsed_query)
-        # {'select': {'all_columns': {}}, 'from': 'tbl2w2QJgo6YCthm', 'limit': 1, 'offset': 10}
         if 'select' in parsed_query and 'from' in parsed_query:
             return self.do_select(parsed_query)
+        # elif 'insert' in parsed_query:
+        #     return self.do_insert(parsed_query)
+        elif 'update' in parsed_query:
+            return self.do_update(parsed_query)
 
         return self
 
@@ -94,7 +107,7 @@ class Cursor(CursorBase):
         page_token, page_size = '', self.yield_per
         while True:
             result = self._connection.bot.get_table_record(table_id, data, page_token=page_token, page_size=page_size)
-            # logger.error("result %r %r --> %r", url, data, result)
+            logger.debug("result %r %r --> %r", table_id, data, result)
             if 'error' in result:
                 raise Exception(result['error'].get('message', result.get('msg')))
             for item in result.get('data', {}).get('items', []):
@@ -116,18 +129,6 @@ class Cursor(CursorBase):
             else:
                 break
 
-    def convert_rows(cols, rows):
-
-        results = []
-        for row in rows:
-            values = []
-            for i, col in enumerate(row['c']):
-                if i < len(cols):
-                    converter = converters[cols[i]['type']]
-                    values.append(converter(col['v']) if col else None)
-            results.append(Row(*values))
-
-        return results
     def _process_result(self, item, names, alias):
         Row = namedtuple('Row', alias, rename=True)
         values = []
@@ -147,8 +148,9 @@ class Cursor(CursorBase):
 
     @property
     def description(self):
+        columns = self._columns[0] if hasattr(self, '_columns') else ['record_id']
         # TODO
-        return [(name, 'varchar', None, None, None, None, True) for name in self._columns[0]]
+        return [(name, 'varchar', None, None, None, None, True) for name in columns]
 
     def get_columns(self, parsed):
         if isinstance(parsed['select'], list):
@@ -163,75 +165,91 @@ class Cursor(CursorBase):
                 return [i['field_name'] for i in items], [i['field_name'] for i in items]
         return [], []
 
-    def _process_filter(self, where):
+    def _process_filter1(self, where):
         if not('or' in where or 'and' in where):
             where = {'and': where if isinstance(where, list) else [where]}
 
         conjunction = 'or' if 'or' in where else 'and'
-        conditions = []
-        for i in where.get(conjunction, []):
-            """
-            operator 可选值有：
-            is：等于
-            isNot：不等于
-            contains：包含
-            doesNotContain：不包含
-            isEmpty：为空
-            isNotEmpty：不为空
-            isGreater：大于
-            isGreaterEqual：大于等于
-            isLess：小于
-            isLessEqual：小于等于
-            like：like
-            in：in
-            """
-            field_name, operator, value = '', '', ''
-            if 'eq' in i:
-                operator = 'is'
-                field_name, value = i['eq']
-            elif 'neq' in i:
-                operator = 'isNot'
-                field_name, value = i['neq']
-            elif 'lt' in i:
-                operator = 'isLess'
-                field_name, value = i['lt']
-            elif 'lte' in i:
-                operator = 'isLessEqual'
-                field_name, value = i['lte']
-            elif 'gt' in i:
-                operator = 'isGreater'
-                field_name, value = i['gt']
-            elif 'gte' in i:
-                operator = 'isGreaterEqual'
-                field_name, value = i['gte']
-            elif 'like' in i:
-                operator = 'like'
-                field_name, value = i['like']
-            elif 'in' in i:
-                operator = 'in'
-                field_name, value = i['in']
-            elif 'missing' in i:
-                operator = 'isEmpty'
-                field_name, value = i['missing'], ''
-            elif 'exists' in i:
-                operator = 'isNotEmpty'
-                field_name, value = i['exists'], ''
-            # TODO filter.children
-
-            if operator:
-                if field_name in self._columns[1]:
-                    field_name = self._columns[0][self._columns[1].index(field_name)]
-                conditions.append({
-                    'field_name': field_name,
-                    'operator': operator,
-                    'value': value if isinstance(value, list) else [value],
-                })
-        return conjunction, conditions
+        conditions = [c for c in where.get(conjunction, []) if bool(c)]
+        filters = []
+        if len(conditions) > 0:
+            filters.append(conjunction.upper())
+            filters.append('(')
+            for c, i in enumerate(conditions):
+                comma = ',' if c > 0 else ''
+                """
+                operator 可选值有：
+                is：等于
+                isNot：不等于
+                contains：包含
+                doesNotContain：不包含
+                isEmpty：为空
+                isNotEmpty：不为空
+                isGreater：大于
+                isGreaterEqual：大于等于
+                isLess：小于
+                isLessEqual：小于等于
+                like：like
+                in：in
+                """
+                if 'eq' in i:
+                    field_name, value = i['eq']
+                    if isinstance(value, dict) and 'literal' in value:
+                        if '"' == value["literal"][0]:
+                            filters.append(f'{comma}CurrentValue.[{field_name}]={value["literal"]}')
+                        else:
+                            filters.append(f'{comma}CurrentValue.[{field_name}]="{value["literal"]}"')
+                    else:
+                        filters.append(f'{comma}CurrentValue.[{field_name}]={json.dumps(value)}')
+                elif 'neq' in i:
+                    field_name, value = i['neq']
+                    if isinstance(value, dict) and 'literal' in value:
+                        filters.append(f'{comma}NOT(CurrentValue.[{field_name}]="{value["literal"]}")')
+                    else:
+                        filters.append(f'{comma}NOT(CurrentValue.[{field_name}]={json.dumps(value["literal"])})')
+                elif 'lt' in i:
+                    field_name, value = i['lt']
+                    # 只支持可以比较大小的
+                    filters.append(f'{comma}CurrentValue.[{field_name}]<{value["literal"]}')
+                elif 'lte' in i:
+                    field_name, value = i['lte']
+                    filters.append(f'{comma}CurrentValue.[{field_name}]<={value["literal"]}')
+                elif 'gt' in i:
+                    field_name, value = i['gt']
+                    filters.append(f'{comma}CurrentValue.[{field_name}]>{value["literal"]}')
+                elif 'gte' in i:
+                    field_name, value = i['gte']
+                    filters.append(f'{comma}CurrentValue.[{field_name}]>={value["literal"]}')
+                elif 'like' in i:
+                    field_name, value = i['like']
+                    # 这里一定是字符串
+                    filters.append(f'{comma}CurrentValue.[{field_name}].contains({value["literal"]})')
+                elif 'in' in i:
+                    field_name, value = i['in']
+                    is_literal = isinstance(value, dict) and 'literal' in value
+                    value = value['literal'] if is_literal else value
+                    if isinstance(value, list):
+                        t = ['OR(']
+                        for l in value:
+                            if is_literal:
+                                t.append(f'CurrentValue.[{field_name}]="{l}"')
+                            else:
+                                t.append(f'CurrentValue.[{field_name}]={l}')
+                        t.append(')')
+                        filters.append(comma + ''.join(t))
+                elif 'missing' in i:
+                    field_name = i['missing']
+                    filters.append(f'{comma}CurrentValue.[{field_name}]=""')
+                elif 'exists' in i:
+                    field_name = i['exists']
+                    filters.append(f'{comma}NOT(CurrentValue.[{field_name}]=""')
+            filters.append(')')
+        return ''.join(filters)
 
     def do_select(self, parsed):
         table_id = parsed['from']
-        self._offset = parsed.get('offset', 0)
-        self._limit = parsed.get('limit', 20000)  # TODO
+        self._offset = int(parsed['offset'].get('literal', 0) if isinstance(parsed.get('offset'), dict) else parsed.get('offset', 0))
+        self._limit = int(parsed['limit'].get('literal', 20000) if isinstance(parsed.get('limit'), dict) else parsed.get('limit', 0))
         self._columns = self.get_columns(parsed)
 
         orderby = parsed.get('orderby', [])
@@ -242,22 +260,57 @@ class Cursor(CursorBase):
             field_name = i['value']
             if field_name in self._columns[1]:
                 field_name = self._columns[0][self._columns[1].index(field_name)]
-            sort.append({
-                'field_name': field_name,
-                'desc': i.get('sort', '').lower() == 'desc'
-            })
+            sort.append(f"{field_name} {i.get('sort', '')}")
 
-        conjunction, conditions = self._process_filter(parsed.get('where', {}))
+        filter_str = self._process_filter1(parsed.get('where', {}))
         self._result_set = self._query_all(table_id, {
-            'field_names': [i for i in self._columns[0] if i not in ['record_id']],  # record_id
-            'sort': sort,
-            'filter': {
-                'conjunction': conjunction,
-                'conditions': conditions,
-            },
+            'field_names': json.dumps([i for i in self._columns[0] if i not in ['record_id']]),  # record_id
+            'sort': json.dumps(sort),
+            'filter': filter_str,
             'automatic_fields': True,
         })
         return self
+
+    def do_insert(self, parsed):
+        # TODO insert empty record, and then update
+        self._columns = ['文本'], ['文本']
+        # execute {'columns': ['文本', '多选'], 'query': {'select': [{'value': {'literal': '文本111'}}, {'value': {'create_array': [{'literal': 'A'}, {'literal': 'B'}]}}]}, 'insert': 'tblID0QbOnjktwdC'}
+        # fields = {}
+        # for index, column in enumerate(parsed['columns']):
+        #     value = parsed['select'][index]['value']
+        #     if 'literal' in value:
+        #         fields[column] = value['literal']
+        #     elif 'create_array' in value:
+        #         pass
+
+        self.lastrowid = self._connection.bot.create_record(parsed['insert'], fields)
+        return self.lastrowid
+
+    def _get_literal_value(self, value):
+        try:
+            return json.loads(value)
+        except:
+            return value
+
+    def _get_record_id_by_where(self, where, table_id):
+        if 'eq' in where and 'record_id' == where['eq'][0]:
+            return [self._get_literal_value(where['eq'][1]['literal'])]
+
+        sql = format({ 'from': table_id, 'where': where, 'select': [{ 'value': 'record_id' }], 'limit': 1 })
+        cursor = Cursor(self._connection)
+        cursor.execute(sql)
+        records = cursor.fetchall()
+        return [record.record_id for record in records]
+
+    def do_update(self, parsed):
+        fields = {field_name: self._get_literal_value(value['literal']) if isinstance(value, dict) and 'literal' in value else value for field_name, value in parsed['set'].items()}
+        table_id = parsed['update']
+        record_ids = self._get_record_id_by_where(parsed.get('where', {}), table_id)
+        records = [{'record_id': record_id, 'fields': fields} for record_id in record_ids]
+        logger.debug('update %r %r %r', record_ids, fields, records)
+        self.rowcount = len(record_ids)
+        if self.rowcount > 0:
+            self._connection.bot.update_records(table_id, records)
 
     def fetchone(self):
         try:
