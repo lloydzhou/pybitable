@@ -77,8 +77,6 @@ def main():
     history = FileHistory(os.path.expanduser('~/.pybitable_history'))
 
     arguments = docopt(__doc__, version=__version__)
-    print('arguments', arguments)
-    print('arguments', arguments['<app_token>'])
 
     app_token = arguments['<app_token>']
     if 'bitable://' not in app_token:
@@ -90,7 +88,6 @@ def main():
     else:
         url = app_token
 
-    print('url', url)
     connection = connect(url)
     cursor = connection.cursor()
 
