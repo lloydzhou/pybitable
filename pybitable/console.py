@@ -1,7 +1,8 @@
 """BITable CLI
 
 Usage:
-  pybitable [options] <app_token>
+  pybitable [-h <host>, --host <host>] [-p <password>, --password <password> [-u <username>, --username <username>]] <app_token>
+  pybitable <connect_string>
   pybitable --help
   pybitable --version
 
@@ -80,15 +81,15 @@ def main():
 
     app_token = arguments['<app_token>']
     if 'bitable://' not in app_token:
-        password = arguments["--password"]
-        assert password
-        username = arguments["--username"] or ''
-        host = arguments["--host"] or 'open.feishu.cn'
-        url = f'bitable+pybitable://{username}:{password}@{host}/{app_token}'
+        password = arguments["--password"] or ['']
+        assert password[0]
+        username = arguments["--username"] or ['']
+        host = arguments["--host"] or ['open.feishu.cn']
+        url = f'bitable+pybitable://{username.pop()}:{password.pop()}@{host.pop()}/{app_token}'
     else:
         url = app_token
 
-    connection = connect(url)
+    connection = connect(url, return_record_id=True)
     cursor = connection.cursor()
 
     lexer = PygmentsLexer(SqlLexer)

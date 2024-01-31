@@ -51,6 +51,11 @@ class ClientMixin:
         url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records'
         return self.get(url, params=dict(page_size=page_size, page_token=page_token, **data)).json()
 
+    def get_record_by_id(self, table_id, record_id):
+        url = f'{self.host}/open-apis/bitable/v1/apps/{self.app_token}/tables/{table_id}/records/{record_id}'
+        result = self.get(url).json()
+        return result.get('data', {}).get('record', {})
+
 
 class PersonalBaseClient(ClientMixin):
     def __init__(self, personal_base_token='', app_token='', host='https://base-api.feishu.cn'):
@@ -83,9 +88,10 @@ class Error(Exception): pass
 
 
 class Cursor(CursorBase):
-    def __init__(self, connection):
+    def __init__(self, connection, return_record_id=False):
         self._connection = connection
         self.yield_per = 500
+        self.return_record_id = return_record_id
 
     def close(self):
         pass
@@ -154,6 +160,8 @@ class Cursor(CursorBase):
 
     def _process_result(self, item, names, alias):
         Row = namedtuple('Row', alias, rename=True)
+        if isinstance(item, (tuple, list)):
+            return Row(*item)
         values = []
         for name in names:
             if name in item:
@@ -184,18 +192,22 @@ class Cursor(CursorBase):
                 return [value], [parsed['select'].get('name', value)]
             elif 'all_columns' in parsed['select']:
                 items = self._connection.bot.get_columns(parsed['from'])
-                return [i['field_name'] for i in items], [i['field_name'] for i in items]
+                _all_columns = [i['field_name'] for i in items]
+                if self.return_record_id:
+                    return ['record_id'] + _all_columns, ['record_id'] + _all_columns
+                return _all_columns, _all_columns
         return [], []
 
     def _process_filter(self, where):
         if 'not' in where:
-            return ''.join(['NOT(', self._process_filter(where['not']), ')'])
+            sub_filter_str, sub_record_ids = self._process_filter(where['not'])
+            return ''.join(['NOT(', sub_filter_str, ')']), sub_record_ids
         if not('or' in where or 'and' in where or 'not' in where):
             where = {'and': where if isinstance(where, list) else [where]}
 
+        filters, record_ids = [], []
         conjunction = 'or' if 'or' in where else 'and'
         conditions = [c for c in where.get(conjunction, []) if bool(c)]
-        filters = []
         if len(conditions) > 0:
             filters.append(conjunction.upper())
             filters.append('(')
@@ -215,16 +227,21 @@ class Cursor(CursorBase):
                 isLessEqual：小于等于
                 like：like
                 in：in
+
+                record_id: 支持eq/in
                 """
                 if 'eq' in i:
                     field_name, value = i['eq']
-                    if isinstance(value, dict) and 'literal' in value:
-                        if '"' == value["literal"][0]:
-                            filters.append(f'{comma}CurrentValue.[{field_name}]={value["literal"]}')
-                        else:
-                            filters.append(f'{comma}CurrentValue.[{field_name}]="{value["literal"]}"')
+                    if field_name == 'record_id':
+                        record_ids.append(value["literal"])
                     else:
-                        filters.append(f'{comma}CurrentValue.[{field_name}]={json.dumps(value, ensure_ascii=False)}')
+                        if isinstance(value, dict) and 'literal' in value:
+                            if '"' == value["literal"][0]:
+                                filters.append(f'{comma}CurrentValue.[{field_name}]={value["literal"]}')
+                            else:
+                                filters.append(f'{comma}CurrentValue.[{field_name}]="{value["literal"]}"')
+                        else:
+                            filters.append(f'{comma}CurrentValue.[{field_name}]={json.dumps(value, ensure_ascii=False)}')
                 elif 'neq' in i:
                     field_name, value = i['neq']
                     if isinstance(value, dict) and 'literal' in value:
@@ -256,14 +273,17 @@ class Cursor(CursorBase):
                     is_literal = isinstance(value, dict) and 'literal' in value
                     value = value['literal'] if is_literal else value
                     if isinstance(value, list):
-                        t = ['OR(']
-                        for l in value:
-                            if is_literal:
-                                t.append(f'CurrentValue.[{field_name}]="{l}"')
-                            else:
-                                t.append(f'CurrentValue.[{field_name}]={l}')
-                        t.append(')')
-                        filters.append(comma + ''.join(t))
+                        if field_name == 'record_id':
+                            record_ids = record_ids + value
+                        else:
+                            t = ['OR(']
+                            for l in value:
+                                if is_literal:
+                                    t.append(f'CurrentValue.[{field_name}]="{l}"')
+                                else:
+                                    t.append(f'CurrentValue.[{field_name}]={l}')
+                            t.append(')')
+                            filters.append(comma + ''.join(t))
                 elif 'missing' in i:
                     field_name = i['missing']
                     filters.append(f'{comma}CurrentValue.[{field_name}]=""')
@@ -271,13 +291,19 @@ class Cursor(CursorBase):
                     field_name = i['exists']
                     filters.append(f'{comma}NOT(CurrentValue.[{field_name}]="")')
                 elif 'not' in i:
-                    filters.append(f'{comma}NOT({self._process_filter(i["not"])})')
+                    sub_filter_str, sub_record_ids = self._process_filter(where['not'])
+                    record_ids = record_ids + sub_record_ids
+                    filters.append(f'{comma}NOT({sub_filter_str})')
                 elif 'and' in i:
-                    filters.append(f'{comma}AND({self._process_filter(i["and"])})')
+                    sub_filter_str, sub_record_ids = self._process_filter(where['and'])
+                    record_ids = record_ids + sub_record_ids
+                    filters.append(f'{comma}AND({sub_filter_str})')
                 elif 'or' in i:
-                    filters.append(f'{comma}OR({self._process_filter(i["or"])})')
+                    sub_filter_str, sub_record_ids = self._process_filter(where['or'])
+                    record_ids = record_ids + sub_record_ids
+                    filters.append(f'{comma}OR({sub_filter_str})')
             filters.append(')')
-        return ''.join(filters)
+        return ''.join(filters), record_ids
 
     def do_show_tables(self):
         tables = self._connection.bot.get_tables()
@@ -305,7 +331,15 @@ class Cursor(CursorBase):
                 field_name = self._columns[0][self._columns[1].index(field_name)]
             sort.append(f"{field_name} {i.get('sort', '')}")
 
-        filter_str = self._process_filter(parsed.get('where', {}))
+        # bitable是不支持通过filter查询的，所以检查一下是否有这个字段
+        # 如果直接传了record_ids，不管是通过eq还是通过in传递进来的record_ids直接查询
+        # TODO 这里可能逻辑上有漏洞
+        filter_str, record_ids = self._process_filter(parsed.get('where', {}))
+        if len(record_ids) > 0:
+            _, alias = self._columns
+            records = [self._connection.bot.get_record_by_id(table_id, record_id) for record_id in record_ids]
+            return self._set_result(alias, records)
+
         self._result_set = self._query_all(table_id, {
             'field_names': json.dumps([i for i in self._columns[0] if i not in ['record_id']], ensure_ascii=False),  # record_id
             'sort': json.dumps(sort, ensure_ascii=False),
@@ -337,14 +371,19 @@ class Cursor(CursorBase):
             return value
 
     def _get_record_id_by_where(self, where, table_id):
-        if 'eq' in where and 'record_id' == where['eq'][0]:
-            return [self._get_literal_value(where['eq'][1])]
+        _, record_ids = self._process_filter(where)
+        if len(record_ids):
+            return record_ids
 
         sql = format({ 'from': table_id, 'where': where, 'select': [{ 'value': 'record_id' }] })
         cursor = Cursor(self._connection)
         cursor.execute(sql)
         records = cursor.fetchall()
         return [record.record_id for record in records]
+
+    def _set_result(self, names, records):
+        self._result_set = iter([self._process_result(item, names, names) for item in records if item])
+        return self
 
     def do_update(self, parsed):
         fields = {field_name: self._get_literal_value(value['literal']) if isinstance(value, dict) and 'literal' in value else value for field_name, value in parsed['set'].items()}
@@ -353,8 +392,10 @@ class Cursor(CursorBase):
         records = [{'record_id': record_id, 'fields': fields} for record_id in record_ids]
         logger.debug('update %r %r %r', record_ids, fields, records)
         self.rowcount = len(record_ids)
+        self._columns = ['record_id'], ['record_id']
         if self.rowcount > 0:
             self._connection.bot.update_records(table_id, records)
+        return self._set_result(['record_id'], [(record_id,) for record_id in record_ids])
 
     def do_delete(self, parsed):
         table_id = parsed['delete']
@@ -363,6 +404,7 @@ class Cursor(CursorBase):
         self.rowcount = len(record_ids)
         if self.rowcount > 0:
             self._connection.bot.delete_records(table_id, record_ids)
+        return self._set_result(['record_id'], [(record_id,) for record_id in record_ids])
 
     def fetchone(self):
         try:
@@ -387,7 +429,8 @@ class Cursor(CursorBase):
 class Connection(ConnectionBase):
     # bitable+pybitable://<app_id>:<app_secret>@open.feishu.cn/<app_token>
     # bitable+pybitable://<personal_base_token>@open.feishu.cn/<app_token>
-    def __init__(self, connect_string, **kwargs):
+    def __init__(self, connect_string, return_record_id=True, **kwargs):
+        self.return_record_id = return_record_id
         if connect_string:
             result = urlparse(connect_string)
             self.app_id = result.username
@@ -422,7 +465,7 @@ class Connection(ConnectionBase):
         pass
 
     def cursor(self):
-        return Cursor(self)
+        return Cursor(self, self.return_record_id)
 
 
 def connect(connection_string: str = "", **kwargs) -> Connection:
