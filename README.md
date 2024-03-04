@@ -29,7 +29,7 @@ pybitable -h base-api.feishu.cn -p <personal_base_token> <app_token>
 pybitable -h open.feishu.cn -u <app_id> -p <app_secret> <app_token>
 pybitable -h open.feishu.cn -u <app_id> -p <app_secret> <app_token>
 pybitable bitable+pybitable://<app_id>:<app_secret>@open.feishu.cn/<app_token>
-pybitable bitable+pybitable://:<personal_base_token>@open.feishu.cn/<app_token>
+pybitable bitable+pybitable://:<personal_base_token>@base-api.feishu.cn/<app_token>
 ```
 ![image](https://github.com/lloydzhou/pybitable/assets/1826685/06a2aa06-6e9f-4ba8-9c9c-c738e7d891e5)
 
