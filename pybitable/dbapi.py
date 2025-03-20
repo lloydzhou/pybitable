@@ -428,7 +428,7 @@ class Cursor(CursorBase):
 
 class Connection(ConnectionBase):
     # bitable+pybitable://<app_id>:<app_secret>@open.feishu.cn/<app_token>
-    # bitable+pybitable://<personal_base_token>@open.feishu.cn/<app_token>
+    # bitable+pybitable://<personal_base_token>@base-api.feishu.cn/<app_token>
     def __init__(self, connect_string, return_record_id=True, **kwargs):
         self.return_record_id = return_record_id
         if connect_string:
